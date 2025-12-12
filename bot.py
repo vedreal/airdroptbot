@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from supabase import create_client, Client
+from dotenv import load_dotenv
+load_dotenv(".env")  # wajib, jangan load_dotenv() doang
 
 # =============== CONFIGURATION ===============
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')

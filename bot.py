@@ -513,4 +513,139 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 Minimum Required: `0.5 SUI`\n\n"
                     f"Keep earning to reach the minimum!"
                 )
-                await query.edit_message_text(msg, parse_mode='Markdow'
+                await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
+        else:
+            user_states[user_id] = 'awaiting_wallet'
+            msg = (
+                f"💳 *Set Wallet Address*\n\n"
+                f"Please send your SUI wallet address.\n\n"
+                f"⚠️ Make sure it's correct!\n"
+                f"Wrong address = lost coins.\n\n"
+                f"Send your wallet address now:"
+            )
+            await query.edit_message_text(msg, parse_mode='Markdown')
+    
+    elif query.data == 'confirm_withdraw':
+        if user['balance'] >= 0.5:
+            # Create withdrawal request
+            withdrawal_data = {
+                'telegram_id': user_id,
+                'amount': user['balance'],
+                'wallet_address': user['wallet_address'],
+                'status': 'pending',
+                'requested_at': datetime.utcnow().isoformat()
+            }
+            supabase_insert('withdrawals', withdrawal_data)
+            
+            # Reset balance
+            supabase_update('users', 'telegram_id', user_id, {
+                'balance': 0.0,
+                'has_withdrawn': True
+            })
+            
+            msg = (
+                f"✅ *Withdrawal Requested!*\n\n"
+                f"💰 Amount: `{user['balance']:.4f} SUI`\n"
+                f"💳 Wallet: `{user['wallet_address']}`\n\n"
+                f"⏰ Processing time: 24-48 hours\n"
+                f"📧 You'll receive a notification when processed.\n\n"
+                f"Thank you for using our bot! 🎉"
+            )
+            await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
+        else:
+            msg = "❌ Insufficient balance for withdrawal."
+            await query.edit_message_text(msg, reply_markup=back_keyboard())
+    
+    elif query.data == 'info':
+        msg = (
+            f"ℹ️ *Bot Information*\n\n"
+            f"🤖 *About This Bot:*\n"
+            f"This is a SUI Airdrop Bot where you can earn real SUI coins!\n\n"
+            f"💰 *Ways to Earn:*\n"
+            f"• Daily check-in: 0.1 SUI\n"
+            f"• Watch ads: 0.05 SUI (every 3 hours)\n"
+            f"• Complete tasks: 0.1 SUI\n"
+            f"• Referrals: 0.001 SUI per user\n\n"
+            f"💳 *Withdrawal:*\n"
+            f"• Minimum: 0.5 SUI\n"
+            f"• Processing: 24-48 hours\n\n"
+            f"❓ *Support:* @your_support\n"
+        )
+        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
+    
+    elif query.data == 'back_main':
+        msg = (
+            f"🏠 *Main Menu*\n\n"
+            f"💰 Balance: `{user['balance']:.4f} SUI`\n"
+            f"👥 Referrals: `{user['referral_count']}`\n\n"
+            f"Choose an option below:"
+        )
+        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+
+# =============== MESSAGE HANDLERS ===============
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages (for wallet address input)"""
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    if user_id in user_states and user_states[user_id] == 'awaiting_wallet':
+        # Validate SUI wallet address (basic validation)
+        if len(text) == 66 and text.startswith('0x'):
+            supabase_update('users', 'telegram_id', user_id, {'wallet_address': text})
+            
+            msg = (
+                f"✅ *Wallet Address Saved!*\n\n"
+                f"💳 Wallet: `{text}`\n\n"
+                f"You can now withdraw your SUI coins when you reach 0.5 SUI minimum.\n\n"
+                f"Keep earning! 🚀"
+            )
+            
+            del user_states[user_id]
+            await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=main_menu_keyboard())
+        else:
+            msg = (
+                f"❌ *Invalid Wallet Address*\n\n"
+                f"Please send a valid SUI wallet address.\n"
+                f"Format: 0x followed by 64 characters\n\n"
+                f"Try again:"
+            )
+            await update.message.reply_text(msg, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(
+            "Use the menu buttons to interact with the bot, or type /start to begin.",
+            reply_markup=main_menu_keyboard()
+        )
+
+# =============== ADSGRAM WEBHOOK ===============
+
+async def adsgram_webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Adsgram ad completion webhook"""
+    # This would be called by Adsgram when user completes watching an ad
+    # Implementation depends on Adsgram's webhook specification
+    pass
+
+# =============== MAIN ===============
+
+def main():
+    """Start the bot"""
+    if not TELEGRAM_BOT_TOKEN:
+        print("Error: TELEGRAM_BOT_TOKEN not set in environment variables")
+        return
+    
+    # Create application
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Add handlers
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("balance", balance_command))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Start bot
+    print("🤖 Bot is starting...")
+    print("✅ Bot is running! Press Ctrl+C to stop.")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()

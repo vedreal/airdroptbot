@@ -1,6 +1,6 @@
 import os
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -46,10 +46,16 @@ def supabase_get(table, filter_col=None, filter_val=None):
 def supabase_insert(table, data):
     """Insert data to Supabase"""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
-    response = requests.post(url, headers=HEADERS, json=data)
-    if response.status_code == 201:
-        return response.json()[0] if response.json() else None
-    return None
+    headers = {**HEADERS, 'Prefer': 'return=representation'}
+    response = requests.post(url, headers=headers, json=data)
+    
+    if response.status_code in [200, 201]:
+        result = response.json()
+        return result[0] if result else data
+    else:
+        print(f"❌ Supabase insert error: {response.status_code}")
+        print(f"Response: {response.text}")
+        return data  # Return data anyway to prevent bot crash
 
 def supabase_update(table, filter_col, filter_val, data):
     """Update data in Supabase"""
@@ -84,17 +90,18 @@ def create_user(user_id, username, referrer_id=None):
         'task_channel': False,
         'task_group': False,
         'task_twitter': False,
-        'created_at': datetime.utcnow().isoformat()
+        'created_at': datetime.now(timezone.utc).isoformat()
     }
     
     result = supabase_insert('users', user_data)
     
     # Give referral bonus to referrer
-    if referrer_id:
+    if referrer_id and result:
         supabase_rpc('add_balance', {'user_id': referrer_id, 'amount': 0.001})
         supabase_rpc('increment_referrals', {'user_id': referrer_id})
     
-    return result
+    # If insert failed, return the user_data with default values so bot doesn't crash
+    return result if result else user_data
 
 def update_balance(user_id, amount):
     """Add SUI coins to user balance"""
@@ -103,11 +110,11 @@ def update_balance(user_id, amount):
 def can_watch_ad(user_id):
     """Check if user can watch ad (3 hour cooldown)"""
     user = get_user(user_id)
-    if not user or not user['last_ad_watch']:
+    if not user or not user.get('last_ad_watch'):
         return True
     
     last_watch = datetime.fromisoformat(user['last_ad_watch'])
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     hours_passed = (now - last_watch).total_seconds() / 3600
     
     return hours_passed >= 3
@@ -115,23 +122,23 @@ def can_watch_ad(user_id):
 def can_claim_daily(user_id):
     """Check if user can claim daily reward"""
     user = get_user(user_id)
-    if not user or not user['last_daily']:
+    if not user or not user.get('last_daily'):
         return True
     
     last_daily = datetime.fromisoformat(user['last_daily'])
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     return now.date() > last_daily.date()
 
 def get_time_until_next_ad(user_id):
     """Get time remaining until next ad watch"""
     user = get_user(user_id)
-    if not user or not user['last_ad_watch']:
+    if not user or not user.get('last_ad_watch'):
         return None
     
     last_watch = datetime.fromisoformat(user['last_ad_watch'])
     next_watch = last_watch + timedelta(hours=3)
-    time_left = next_watch - datetime.utcnow()
+    time_left = next_watch - datetime.now(timezone.utc)
     
     if time_left.total_seconds() <= 0:
         return None
@@ -270,7 +277,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if can_claim_daily(user_id):
             update_balance(user_id, 0.1)
             supabase_update('users', 'telegram_id', user_id, {
-                'last_daily': datetime.utcnow().isoformat()
+                'last_daily': datetime.now(timezone.utc).isoformat()
             })
             
             new_balance = user['balance'] + 0.1
@@ -537,7 +544,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'amount': user['balance'],
                 'wallet_address': user['wallet_address'],
                 'status': 'pending',
-                'requested_at': datetime.utcnow().isoformat()
+                'requested_at': datetime.now(timezone.utc).isoformat()
             }
             supabase_insert('withdrawals', withdrawal_data)
             

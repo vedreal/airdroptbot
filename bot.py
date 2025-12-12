@@ -1,11 +1,8 @@
 import os
-import time
+import requests
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from supabase import create_client, Client
-from dotenv import load_dotenv
-load_dotenv(".env")  # wajib, jangan load_dotenv() doang
 
 # =============== CONFIGURATION ===============
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -18,18 +15,55 @@ TELEGRAM_CHANNEL = "https://t.me/your_channel"
 TELEGRAM_GROUP = "https://t.me/your_group"
 TWITTER_ACCOUNT = "https://twitter.com/your_account"
 
-# Initialize Supabase
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase headers
+HEADERS = {
+    'apikey': SUPABASE_KEY,
+    'Authorization': f'Bearer {SUPABASE_KEY}',
+    'Content-Type': 'application/json'
+}
 
 # User states for conversation flow
 user_states = {}
+
+# =============== SUPABASE HELPER FUNCTIONS ===============
+
+def supabase_get(table, filter_col=None, filter_val=None):
+    """Get data from Supabase using REST API"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    if filter_col and filter_val:
+        url += f"?{filter_col}=eq.{filter_val}"
+    
+    response = requests.get(url, headers=HEADERS)
+    if response.status_code == 200:
+        data = response.json()
+        return data[0] if data else None
+    return None
+
+def supabase_insert(table, data):
+    """Insert data to Supabase"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    response = requests.post(url, headers=HEADERS, json=data)
+    if response.status_code == 201:
+        return response.json()[0] if response.json() else None
+    return None
+
+def supabase_update(table, filter_col, filter_val, data):
+    """Update data in Supabase"""
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{filter_col}=eq.{filter_val}"
+    response = requests.patch(url, headers=HEADERS, json=data)
+    return response.status_code == 204
+
+def supabase_rpc(function_name, params):
+    """Call Supabase RPC function"""
+    url = f"{SUPABASE_URL}/rest/v1/rpc/{function_name}"
+    response = requests.post(url, headers=HEADERS, json=params)
+    return response.status_code == 204
 
 # =============== HELPER FUNCTIONS ===============
 
 def get_user(user_id):
     """Get user data from Supabase"""
-    result = supabase.table('users').select('*').eq('telegram_id', user_id).execute()
-    return result.data[0] if result.data else None
+    return supabase_get('users', 'telegram_id', user_id)
 
 def create_user(user_id, username, referrer_id=None):
     """Create new user in database"""
@@ -49,23 +83,23 @@ def create_user(user_id, username, referrer_id=None):
         'created_at': datetime.utcnow().isoformat()
     }
     
-    result = supabase.table('users').insert(user_data).execute()
+    result = supabase_insert('users', user_data)
     
     # Give referral bonus to referrer
     if referrer_id:
-        supabase.rpc('add_balance', {'user_id': referrer_id, 'amount': 0.001}).execute()
-        supabase.rpc('increment_referrals', {'user_id': referrer_id}).execute()
+        supabase_rpc('add_balance', {'user_id': referrer_id, 'amount': 0.001})
+        supabase_rpc('increment_referrals', {'user_id': referrer_id})
     
-    return result.data[0] if result.data else None
+    return result
 
 def update_balance(user_id, amount):
     """Add SUI coins to user balance"""
-    supabase.rpc('add_balance', {'user_id': user_id, 'amount': amount}).execute()
+    supabase_rpc('add_balance', {'user_id': user_id, 'amount': amount})
 
 def can_watch_ad(user_id):
     """Check if user can watch ad (3 hour cooldown)"""
     user = get_user(user_id)
-    if not user['last_ad_watch']:
+    if not user or not user['last_ad_watch']:
         return True
     
     last_watch = datetime.fromisoformat(user['last_ad_watch'])
@@ -77,19 +111,18 @@ def can_watch_ad(user_id):
 def can_claim_daily(user_id):
     """Check if user can claim daily reward"""
     user = get_user(user_id)
-    if not user['last_daily']:
+    if not user or not user['last_daily']:
         return True
     
     last_daily = datetime.fromisoformat(user['last_daily'])
     now = datetime.utcnow()
     
-    # Check if it's a new day
     return now.date() > last_daily.date()
 
 def get_time_until_next_ad(user_id):
     """Get time remaining until next ad watch"""
     user = get_user(user_id)
-    if not user['last_ad_watch']:
+    if not user or not user['last_ad_watch']:
         return None
     
     last_watch = datetime.fromisoformat(user['last_ad_watch'])
@@ -141,17 +174,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or "User"
     
-    # Check for referral code
     referrer_id = None
     if context.args:
         try:
             referrer_id = int(context.args[0])
             if referrer_id == user_id:
-                referrer_id = None  # Can't refer yourself
+                referrer_id = None
         except:
             pass
     
-    # Get or create user
     user = get_user(user_id)
     if not user:
         user = create_user(user_id, username, referrer_id)
@@ -220,7 +251,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Please start the bot first with /start")
         return
     
-    # ===== BALANCE =====
     if query.data == 'balance':
         total_earned = user['referral_count'] * 0.001
         msg = (
@@ -232,16 +262,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
     
-    # ===== DAILY CHECK-IN =====
     elif query.data == 'daily':
         if can_claim_daily(user_id):
             update_balance(user_id, 0.1)
-            supabase.table('users').update({
+            supabase_update('users', 'telegram_id', user_id, {
                 'last_daily': datetime.utcnow().isoformat()
-            }).eq('telegram_id', user_id).execute()
+            })
             
             new_balance = user['balance'] + 0.1
-            
             msg = (
                 f"🎁 *Daily Check-in Successful!*\n\n"
                 f"✅ Reward: `+0.1 SUI`\n"
@@ -258,7 +286,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
     
-    # ===== TASKS MENU =====
     elif query.data == 'tasks':
         channel_status = "✅" if user['task_channel'] else "⏳"
         group_status = "✅" if user['task_group'] else "⏳"
@@ -282,7 +309,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=tasks_keyboard())
     
-    # ===== TASK: CHANNEL =====
     elif query.data == 'task_channel':
         if user['task_channel']:
             msg = "✅ You've already completed this task!"
@@ -297,22 +323,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📢 *Join Telegram Channel*\n\n"
                 f"1️⃣ Click 'Join Channel' button below\n"
                 f"2️⃣ Join our official channel\n"
-                f"3️⃣ Click 'Verify' to claim 0.1 SUI\n"
+                f"3️⃣ Click 'Verify'\n"
             )
-            await query.edit_message_text(
-                msg, 
-                parse_mode='Markdown', 
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ===== VERIFY CHANNEL =====
     elif query.data == 'verify_channel':
         if not user['task_channel']:
-            supabase.table('users').update({
-                'task_channel': True
-            }).eq('telegram_id', user_id).execute()
+            supabase_update('users', 'telegram_id', user_id, {'task_channel': True})
             
-            # Check if all tasks completed
             user = get_user(user_id)
             all_completed = user['task_channel'] and user['task_group'] and user['task_twitter']
             
@@ -326,16 +344,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"💰 New Balance: `{new_balance:.4f} SUI`"
                 )
             else:
-                msg = (
-                    f"✅ *Channel Task Verified!*\n\n"
-                    f"Complete the remaining tasks to earn 0.1 SUI!"
-                )
+                msg = f"✅ *Channel Task Verified!*\n\nComplete the remaining tasks to earn 0.1 SUI!"
         else:
             msg = "✅ You've already verified this task!"
         
         await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=tasks_keyboard())
     
-    # ===== TASK: GROUP =====
     elif query.data == 'task_group':
         if user['task_group']:
             msg = "✅ You've already completed this task!"
@@ -350,22 +364,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👥 *Join Telegram Group*\n\n"
                 f"1️⃣ Click 'Join Group' button below\n"
                 f"2️⃣ Join our community group\n"
-                f"3️⃣ Click 'Verify' to claim 0.1 SUI\n"
+                f"3️⃣ Click 'Verify'\n"
             )
-            await query.edit_message_text(
-                msg, 
-                parse_mode='Markdown', 
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ===== VERIFY GROUP =====
     elif query.data == 'verify_group':
         if not user['task_group']:
-            supabase.table('users').update({
-                'task_group': True
-            }).eq('telegram_id', user_id).execute()
+            supabase_update('users', 'telegram_id', user_id, {'task_group': True})
             
-            # Check if all tasks completed
             user = get_user(user_id)
             all_completed = user['task_channel'] and user['task_group'] and user['task_twitter']
             
@@ -379,16 +385,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"💰 New Balance: `{new_balance:.4f} SUI`"
                 )
             else:
-                msg = (
-                    f"✅ *Group Task Verified!*\n\n"
-                    f"Complete the remaining tasks to earn 0.1 SUI!"
-                )
+                msg = f"✅ *Group Task Verified!*\n\nComplete the remaining tasks to earn 0.1 SUI!"
         else:
             msg = "✅ You've already verified this task!"
         
         await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=tasks_keyboard())
     
-    # ===== TASK: TWITTER =====
     elif query.data == 'task_twitter':
         if user['task_twitter']:
             msg = "✅ You've already completed this task!"
@@ -403,22 +405,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🐦 *Follow Twitter Account*\n\n"
                 f"1️⃣ Click 'Follow Twitter' button below\n"
                 f"2️⃣ Follow our official account\n"
-                f"3️⃣ Click 'Verify' to claim 0.1 SUI\n"
+                f"3️⃣ Click 'Verify'\n"
             )
-            await query.edit_message_text(
-                msg, 
-                parse_mode='Markdown', 
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ===== VERIFY TWITTER =====
     elif query.data == 'verify_twitter':
         if not user['task_twitter']:
-            supabase.table('users').update({
-                'task_twitter': True
-            }).eq('telegram_id', user_id).execute()
+            supabase_update('users', 'telegram_id', user_id, {'task_twitter': True})
             
-            # Check if all tasks completed
             user = get_user(user_id)
             all_completed = user['task_channel'] and user['task_group'] and user['task_twitter']
             
@@ -432,19 +426,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"💰 New Balance: `{new_balance:.4f} SUI`"
                 )
             else:
-                msg = (
-                    f"✅ *Twitter Task Verified!*\n\n"
-                    f"Complete the remaining tasks to earn 0.1 SUI!"
-                )
+                msg = f"✅ *Twitter Task Verified!*\n\nComplete the remaining tasks to earn 0.1 SUI!"
         else:
             msg = "✅ You've already verified this task!"
         
         await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=tasks_keyboard())
     
-    # ===== WATCH AD =====
     elif query.data == 'watch_ad':
         if can_watch_ad(user_id):
-            # Generate Adsgram link
             ad_link = f"https://adsgram.ai/watch?userId={user_id}&botId={context.bot.id}"
             
             keyboard = [
@@ -462,11 +451,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"After watching, you'll receive 0.05 SUI automatically."
             )
             
-            await query.edit_message_text(
-                msg,
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             time_left = get_time_until_next_ad(user_id)
             
@@ -484,13 +469,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Click 'Refresh' to check again."
             )
             
-            await query.edit_message_text(
-                msg, 
-                parse_mode='Markdown', 
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+            await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ===== REFERRAL =====
     elif query.data == 'referral':
         bot_username = context.bot.username
         ref_link = f"https://t.me/{bot_username}?start={user_id}"
@@ -508,7 +488,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
     
-    # ===== WITHDRAW =====
     elif query.data == 'withdraw':
         if user['wallet_address']:
             if user['balance'] >= 0.5:
@@ -526,11 +505,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Click 'Confirm' to proceed."
                 )
                 
-                await query.edit_message_text(
-                    msg,
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
+                await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
             else:
                 msg = (
                     f"❌ *Insufficient Balance*\n\n"
@@ -538,141 +513,4 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 Minimum Required: `0.5 SUI`\n\n"
                     f"Keep earning to reach the minimum!"
                 )
-                await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
-        else:
-            user_states[user_id] = 'awaiting_wallet'
-            msg = (
-                f"💳 *Set Your SUI Wallet*\n\n"
-                f"Please send your SUI wallet address.\n\n"
-                f"⚠️ Make sure the address is correct!\n"
-                f"We cannot recover coins sent to wrong addresses.\n\n"
-                f"Example: 0x1234567890abcdef..."
-            )
-            await query.edit_message_text(msg, parse_mode='Markdown')
-    
-    # ===== CONFIRM WITHDRAW =====
-    elif query.data == 'confirm_withdraw':
-        # Create withdrawal request
-        withdrawal = {
-            'user_id': user_id,
-            'amount': user['balance'],
-            'wallet_address': user['wallet_address'],
-            'status': 'pending',
-            'created_at': datetime.utcnow().isoformat()
-        }
-        
-        supabase.table('withdrawals').insert(withdrawal).execute()
-        
-        # Update user
-        supabase.table('users').update({
-            'balance': 0.0,
-            'has_withdrawn': True
-        }).eq('telegram_id', user_id).execute()
-        
-        msg = (
-            f"✅ *Withdrawal Request Submitted!*\n\n"
-            f"💰 Amount: `{user['balance']:.4f} SUI`\n"
-            f"💳 Wallet: `{user['wallet_address']}`\n\n"
-            f"⏰ Your SUI coins will be processed within 24-48 hours.\n"
-            f"📧 You'll receive a confirmation message once completed.\n\n"
-            f"Thank you for participating in our airdrop! 🎉"
-        )
-        
-        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
-    
-    # ===== INFO =====
-    elif query.data == 'info':
-        msg = (
-            f"ℹ️ *SUI Airdrop Information*\n\n"
-            f"💎 *About SUI:*\n"
-            f"SUI is a layer-1 blockchain designed for speed, security, and scalability. "
-            f"This airdrop gives you real SUI coins!\n\n"
-            f"💰 *Earning Methods:*\n"
-            f"• Daily Check-in: 0.1 SUI\n"
-            f"• Watch Ads: 0.05 SUI (every 3 hours)\n"
-            f"• Complete ALL Tasks: 0.1 SUI (3 tasks total)\n"
-            f"• Referrals: 0.001 SUI per user\n\n"
-            f"💳 *Withdrawal Info:*\n"
-            f"• Minimum: 0.5 SUI\n"
-            f"• Network: SUI Mainnet\n"
-            f"• Processing: 24-48 hours\n"
-            f"• No withdrawal fees!\n\n"
-            f"🔒 *Security:*\n"
-            f"Your wallet address is encrypted and secure. "
-            f"We never ask for private keys.\n\n"
-            f"📞 *Support:*\n"
-            f"For questions, contact our admin team."
-        )
-        
-        await query.edit_message_text(msg, parse_mode='Markdown', reply_markup=back_keyboard())
-    
-    # ===== BACK TO MAIN =====
-    elif query.data == 'back_main':
-        msg = (
-            f"🏠 *Main Menu*\n\n"
-            f"💰 Balance: `{user['balance']:.4f} SUI`\n"
-            f"👥 Referrals: `{user['referral_count']}`\n\n"
-            f"Choose an option below:"
-        )
-        
-        await query.edit_message_text(
-            msg,
-            parse_mode='Markdown',
-            reply_markup=main_menu_keyboard()
-        )
-
-# ===== MESSAGE HANDLER (for wallet input) =====
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages"""
-    user_id = update.effective_user.id
-    text = update.message.text
-    
-    if user_id in user_states and user_states[user_id] == 'awaiting_wallet':
-        # Validate SUI wallet address (basic validation - starts with 0x and 66 chars)
-        if len(text) == 66 and text.startswith('0x'):
-            # Save wallet
-            supabase.table('users').update({
-                'wallet_address': text
-            }).eq('telegram_id', user_id).execute()
-            
-            del user_states[user_id]
-            
-            msg = (
-                f"✅ *Wallet Address Saved!*\n\n"
-                f"💳 Address: `{text}`\n\n"
-                f"You can now withdraw your SUI coins!\n"
-                f"Minimum withdrawal: 0.5 SUI"
-            )
-            
-            await update.message.reply_text(
-                msg,
-                parse_mode='Markdown',
-                reply_markup=main_menu_keyboard()
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Invalid SUI wallet address!\n\n"
-                "Please send a valid SUI address.\n"
-                "It should start with 0x and be 66 characters long.\n\n"
-                "Example: 0x1234567890abcdef..."
-            )
-
-# =============== MAIN FUNCTION ===============
-
-def main():
-    """Start the bot"""
-    # Create application
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("balance", balance_command))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    
-    # Start bot
-    print("🤖 SUI Airdrop Bot is running...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
+                await query.edit_message_text(msg, parse_mode='Markdow

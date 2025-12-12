@@ -513,4 +513,4 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📊 Minimum Required: `0.5 SUI`\n\n"
                     f"Keep earning to reach the minimum!"
                 )
-                await query.edit_message_text(msg, parse_mode='Markdow
+                await query.edit_message_text(msg, parse_mode='Markdow'

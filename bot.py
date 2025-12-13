@@ -445,7 +445,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'watch_ad':
         if can_watch_ad(user_id):
-            ad_link = f"https://adsgram.ai/watch?userId={user_id}&botId={context.bot.id}"
+            # UPDATED: Use correct Adsgram block ID from your dashboard
+            # Get your Block ID from Adsgram dashboard after creating ad unit
+            adsgram_block_id = "bot-19057"  # Replace with actual Block ID
+            ad_link = f"https://adsgram.ai/adv/{adsgram_block_id}?tg_id={user_id}&tg_platform=android"
             
             keyboard = [
                 [InlineKeyboardButton("🎥 Watch Ad Now", url=ad_link)],
@@ -633,7 +636,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def adsgram_webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle Adsgram ad completion webhook"""
     # This would be called by Adsgram when user completes watching an ad
-    # Implementation depends on Adsgram's webhook specification
+    # For now, this is a placeholder
+    # You need to set up a web server to receive webhooks from Adsgram
+    pass
+
+def setup_adsgram_webhook():
+    """Setup Flask/FastAPI webhook endpoint for Adsgram"""
+    # This needs to be implemented with Flask or FastAPI
+    # Running alongside the Telegram bot
     pass
 
 # =============== MAIN ===============

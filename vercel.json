@@ -2,18 +2,8 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/adsgram-webhook.py",
+      "src": "api/*.py",
       "use": "@vercel/python"
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/adsgram-webhook",
-      "dest": "api/adsgram-webhook.py"
-    }
-  ],
-  "env": {
-    "SUPABASE_URL": "@supabase_url",
-    "SUPABASE_KEY": "@supabase_key"
-  }
+  ]
 }

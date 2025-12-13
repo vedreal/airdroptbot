@@ -17,8 +17,3 @@
     "SUPABASE_KEY": "@supabase_key"
   }
 }
-```
-
-**3. Buat `requirements.txt` untuk Vercel:**
-```
-requests==2.31.0

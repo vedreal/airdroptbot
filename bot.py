@@ -447,7 +447,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if can_watch_ad(user_id):
             # UPDATED: Use correct Adsgram block ID from your dashboard
             # Get your Block ID from Adsgram dashboard after creating ad unit
-            adsgram_block_id = "bot-19057"  # Replace with actual Block ID
+            adsgram_block_id = "19057"  # Replace with actual Block ID
             ad_link = f"https://adsgram.ai/adv/{adsgram_block_id}?tg_id={user_id}&tg_platform=android"
             
             keyboard = [

@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/adsgram-webhook.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/adsgram-webhook",
+      "dest": "api/adsgram-webhook.py"
+    }
+  ],
+  "env": {
+    "SUPABASE_URL": "@supabase_url",
+    "SUPABASE_KEY": "@supabase_key"
+  }
+}
+```
+
+**3. Buat `requirements.txt` untuk Vercel:**
+```
+requests==2.31.0
